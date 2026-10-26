@@ -69,6 +69,26 @@ function submitGradeable(versionNumber) {
 };
 
 /**
+ * Revisits a version until its autograding results are shown, for up to two minutes.
+ * The page's own reload when grading finishes is turned off in runTests.
+ * @param {string} gradeableName the name of the gradeable we are checking
+ * @param {number} versionNumber version number we are waiting on
+ * @param {number} retriesLeft number of revisits left before failing
+ */
+function waitForResults(gradeableName, versionNumber, retriesLeft = 24) {
+    switchOrFindVersion(gradeableName, versionNumber);
+    cy.get('[data-testid="content-main"]').then(($content) => {
+        if ($content.find('[data-testid="autograding-total-no-hidden"]').length > 0) {
+            return;
+        }
+        expect(retriesLeft, `autograding results for version ${versionNumber} within two minutes`).to.be.greaterThan(0);
+        // eslint-disable-next-line cypress/no-unnecessary-waiting
+        cy.wait(5000);
+        waitForResults(gradeableName, versionNumber, retriesLeft - 1);
+    });
+}
+
+/**
  * Checks non hidden test results
  * @param {string} gradeableName the name of the gradeable we are checking
  * @param {number} versionNumber version number that we should check the grades against
@@ -76,12 +96,10 @@ function submitGradeable(versionNumber) {
  * @param {(number|'?')[]} fullScores the max scores for the gradeables
  */
 function checkNonHiddenResults(gradeableName, versionNumber, expectedScores, fullScores) {
-    switchOrFindVersion(gradeableName, versionNumber);
     expect(expectedScores.length).to.eq(fullScores.length);
     // after 20 submissions we start having penalties
     expect(versionNumber).to.be.lessThan(20);
-    // wait for autograding results for two minutes
-    cy.get('[data-testid="autograding-total-no-hidden"]', { timeout: 120000 });
+    waitForResults(gradeableName, versionNumber);
 
     // we should only check total if we do not have a non-deterministic score
     if (!fullScores.includes('?')) {
@@ -160,6 +178,13 @@ function checkSubmissions(gradeable, submissions) {
  * @param {Array} gradeables an array of gradeable objects with name and submissions
  */
 export function runTests(gradeables) {
+    // While a submission is being graded the page polls check_refresh and reloads itself when grading
+    // finishes. In CI those reloads have come up without the page's scripts ("createArray is not defined"),
+    // so the page is kept from reloading and waitForResults revisits it instead.
+    cy.intercept('GET', '**/check_refresh*', {
+        headers: { 'content-type': 'text/html; charset=UTF-8' },
+        body: JSON.stringify({ status: 'success', data: false }),
+    });
     gradeables.forEach((gradeable, index) => {
         submitSubmissions(gradeable.name, gradeable.submissions);
     });
